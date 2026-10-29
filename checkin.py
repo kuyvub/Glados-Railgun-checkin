@@ -1,4 +1,8 @@
+import base64
+import hashlib
+import hmac
 import os
+import time
 import sys
 from dataclasses import asdict, dataclass
 from enum import Enum
@@ -102,6 +106,7 @@ class Config:
     ENV_COOKIES = "GLADOS_COOKIES"
     ENV_EXCHANGE_PLAN = "GLADOS_EXCHANGE_PLAN"
     ENV_VERBOSE = "GLADOS_VERBOSE"
+    ENV_RAILGUN = "RAILGUN"
 
     """默认兑换计划（none 表示不自动兑换）"""
     DEFAULT_EXCHANGE_PLAN = "none"
@@ -113,6 +118,8 @@ class Config:
     DOMAINS = ["glados.cloud", "railgun.info"]
 
     """兑换计划列表"""
+    EXCHANGE_DAYS = {"plan100": 10, "plan200": 30, "plan500": 100}
+
     EXCHANGE_PLANS = {
         ExchangePlan.PLAN100.value: 100,
         ExchangePlan.PLAN200.value: 200,
@@ -125,6 +132,15 @@ class Config:
         self.cookies_list: List[str] = []
         self.exchange_plan: str = self.DEFAULT_EXCHANGE_PLAN
         self.verbose: bool = self.DEFAULT_VERBOSE
+        # 新渠道只在凭证完整时启用；密钥不会写入日志。
+        for name in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "FEISHU_WEBHOOK",
+                     "FEISHU_SECRET", "DINGTALK_WEBHOOK", "DINGTALK_SECRET", "WECOM_WEBHOOK"):
+            setattr(self, name.lower(), os.environ.get(name, "").strip())
+        # 未设置时兼容原有双站行为；显式 0 才关闭 Railgun。
+        railgun = os.environ.get(self.ENV_RAILGUN, "").strip() or "1"
+        if railgun not in ("0", "1"):
+            raise ValueError("RAILGUN 仅支持 0 或 1")
+        self.domains = [domain for domain in self.DOMAINS if domain != "railgun.info" or railgun == "1"]
         self._load_config()
 
     def _load_config(self) -> None:
@@ -201,6 +217,7 @@ class API:
     EXCHANGE_URL = APIEndpoint.EXCHANGE.value
 
     def __init__(self, domain: str, cookie_index: int = 0, verbose: bool = False):
+        self.email = "邮箱未知"  # 仅缓存脱敏邮箱，不保存原始邮箱
         self.domain: str = domain
         self.cookie_index: int = cookie_index
         self.verbose: bool = verbose
@@ -283,7 +300,7 @@ class API:
                 return None
 
             if not response.ok:
-                self._log("warning", LogEmoji.WARNING, f"向 {url} 发起的请求失败，状态码 {response.status_code}。响应内容: {response.text}", force=True)
+                self._log("warning", LogEmoji.WARNING, f"向 {url} 发起的请求失败，状态码 {response.status_code}。", force=True)
                 return None
             return response
         except requests.exceptions.RequestException as e:
@@ -398,7 +415,10 @@ class API:
         if response:
             data = response.json()
             code = data.get("code", -2)
-            left_days = data.get("data", {}).get("leftDays", None)
+            account = data.get("data") or {}
+            if code == 0:
+                self.email = mask_email(account.get("email"))
+            left_days = account.get("leftDays")
 
             if left_days is not None:
                 left_days_int = int(float(left_days))
@@ -422,7 +442,7 @@ class API:
             code = data.get("code", -2)
             points = data.get("points", None)
 
-            if points is not None:
+            if code == 0 and points is not None:
                 points_int = int(float(points))
                 self._log("info", LogEmoji.SUCCESS, f"{{ code : {code}, points : {points_int} 积分}}")
                 points_str = f"{points_int} 积分"
@@ -448,7 +468,7 @@ class API:
 
             if code == 0:
                 self._log("info", LogEmoji.SUCCESS, f"{{ code : {code}, message : {message} }}")
-                return f"兑换成功: {plan}"
+                return f"🎁兑换成功(+{Config.EXCHANGE_DAYS[plan]}天)"
             else:
                 self._log("info", LogEmoji.FAIL, f"{{ code : {code}, message : {message} }}", force=True)
                 return f"兑换失败: {message}"
@@ -457,12 +477,29 @@ class API:
             return "兑换失败"
 
 
+def mask_email(email: Optional[str]) -> str:
+    """邮箱本地部分保留前两位和末位；短用户名进一步隐藏，避免完整暴露。"""
+    if not isinstance(email, str) or email.count("@") != 1:
+        return "邮箱未知"
+    local, domain = email.strip().split("@")
+    if not local or not domain or any(char.isspace() for char in local + domain):
+        return "邮箱未知"
+    if len(local) > 3:
+        masked = local[:2] + "***" + local[-1]
+    elif len(local) > 1:
+        masked = local[0] + "***"
+    else:
+        masked = "***"
+    return f"{masked}@{domain}"
+
+
 @dataclass()
 class CheckinResult:
     """签到结果"""
 
     cookie_index: int
     domain: str
+    email: str = "邮箱未知"
     status: str = "签到失败"
     points: str = "0"
     days: str = "None"
@@ -479,13 +516,15 @@ def render_payload(payload: dict, line_sep: str = "\n") -> str:
     """将结构化签到结果渲染为文本。line_sep 控制行分隔：
     PushDeer 用 \\n（原生换行），Server酱 用 '  \\n'（Markdown 硬换行，避免段间空行）。"""
     lines = []
+    domains = {row["domain"] for row in payload.get("rows", [])}
     for r in payload.get("rows", []):
+        # 双站同时启用时保留域名，避免相同邮箱的两条结果混淆。
+        domain = f" [{r['domain']}]" if len(domains) > 1 else ""
+        status = f"成功(+{r['points']}积分)" if r["emoji"] == LogEmoji.SUCCESS else r["status"]
         line = (
-            f"#{r['index']:<2}  {r['emoji']} {r['status']:<6}  {r['domain']:<13}  "
-            f"获得 {r['points']} 积分 · 剩余 {r['days']} · 总 {r['points_total']}"
+            f"{r['index']}.{r.get('email', '邮箱未知')}{r['emoji']}{status}{domain}"
+            f" | 总积分:{r['points_total']} | 剩余:{r['days']} | 兑换:{r['exchange']}"
         )
-        if r.get("exchange"):
-            line += f" · {r['exchange']}"
         lines.append(line)
     note = payload.get("note")
     if note:
@@ -534,7 +573,7 @@ class ServerChanBackend(PushBackend):
 
     def _render(self, payload: dict) -> str:
         # Server酱 按 Markdown 渲染，单 \n 不换行；用行尾两空格+\n 做硬换行，避免段间空行
-        return render_payload(payload, "  \n")
+        return render_payload(payload, "  \n").replace("*", "\\*")
 
     def send(self, title: str, payload: dict) -> bool:
         # 延迟导入：未安装 SDK 时不阻断其他后端（如 PushDeer）
@@ -554,6 +593,93 @@ class ServerChanBackend(PushBackend):
             return False
 
 
+def split_message(text: str, limit: int = 1800) -> List[str]:
+    """按 UTF-8 字节分片，兼容企业微信 2048 字节上限及其他渠道限制。"""
+    chunks, current, size = [], [], 0
+    for char in text:
+        width = len(char.encode("utf-8"))
+        if size + width > limit:
+            chunks.append("".join(current))
+            current, size = [], 0
+        current.append(char)
+        size += width
+    if current:
+        chunks.append("".join(current))
+    return chunks
+
+
+class HTTPPushBackend(PushBackend):
+    """公共 HTTP 推送：检查 HTTP 和业务状态，异常日志不包含凭证 URL。"""
+
+    def _messages(self, title: str, payload: dict) -> List[str]:
+        # 每片均带标题，确保机器人关键词校验在后续分片中仍有效。
+        return [f"{title}\n\n{chunk}" for chunk in split_message(self._render(payload), 1600)] or [title]
+
+    def _post(self, url: str, body: dict, success_key: str, success_value, params=None) -> bool:
+        try:
+            response = requests.post(url, json=body, params=params, timeout=(10, 30))
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and data.get(success_key) == success_value:
+                return True
+            logger.error(f"[{self.name}] 推送失败：接口业务状态异常，请检查机器人配置。")
+        except (requests.RequestException, ValueError):
+            # requests 异常可能包含 token / webhook；禁止直接输出异常或响应正文。
+            logger.error(f"[{self.name}] 推送失败：网络、HTTP 状态或响应格式异常。")
+        return False
+
+
+class TelegramBackend(HTTPPushBackend):
+    """Telegram Bot API 纯文本推送，避免邮箱星号被 Markdown 解释。"""
+
+    name = "Telegram"
+
+    def __init__(self, token: str, chat_id: str):
+        self.url = f"https://api.telegram.org/bot{token}/sendMessage"
+        self.chat_id = chat_id
+
+    def send(self, title: str, payload: dict) -> bool:
+        results = [self._post(self.url, {"chat_id": self.chat_id, "text": text}, "ok", True)
+                   for text in self._messages(title, payload)]
+        return all(results)
+
+
+class WebhookBackend(HTTPPushBackend):
+    """飞书、钉钉、企业微信群机器人；支持飞书与钉钉可选加签。"""
+
+    def __init__(self, platform: str, webhook: str, secret: str = ""):
+        self.platform = platform
+        self.webhook = webhook
+        self.secret = secret
+        self.name = {"feishu": "飞书", "dingtalk": "钉钉", "wecom": "企业微信"}[platform]
+
+    def send(self, title: str, payload: dict) -> bool:
+        results = []
+        for text in self._messages(title, payload):
+            params = None
+            if self.platform == "feishu":
+                body = {"msg_type": "text", "content": {"text": text}}
+                if self.secret:
+                    timestamp = str(int(time.time()))
+                    # 飞书以 timestamp + 换行 + secret 为 HMAC key，消息为空。
+                    key = f"{timestamp}\n{self.secret}".encode()
+                    body.update(timestamp=timestamp, sign=base64.b64encode(
+                        hmac.new(key, b"", hashlib.sha256).digest()).decode())
+                success_key = "code"
+            else:
+                body = {"msgtype": "text", "text": {"content": text}}
+                if self.platform == "dingtalk" and self.secret:
+                    timestamp = str(int(time.time() * 1000))
+                    # 钉钉使用毫秒时间戳，交由 requests 编码签名查询参数。
+                    sign = base64.b64encode(hmac.new(
+                        self.secret.encode(), f"{timestamp}\n{self.secret}".encode(),
+                        hashlib.sha256).digest()).decode()
+                    params = {"timestamp": timestamp, "sign": sign}
+                success_key = "errcode"
+            results.append(self._post(self.webhook, body, success_key, 0, params))
+        return all(results)
+
+
 class PushService:
     """推送服务：聚合多个后端，向全部已配置后端发送（都发）"""
 
@@ -564,6 +690,14 @@ class PushService:
                 self.backends.append(PushDeerBackend(config.push_key))
             if getattr(config, "serverchan_key", ""):
                 self.backends.append(ServerChanBackend(config.serverchan_key))
+            if config.telegram_bot_token and config.telegram_chat_id:
+                self.backends.append(TelegramBackend(config.telegram_bot_token, config.telegram_chat_id))
+            elif config.telegram_bot_token or config.telegram_chat_id:
+                logger.warning("Telegram 需要同时配置 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID，跳过该渠道。")
+            for platform in ("feishu", "dingtalk", "wecom"):
+                webhook = getattr(config, f"{platform}_webhook")
+                if webhook:
+                    self.backends.append(WebhookBackend(platform, webhook, getattr(config, f"{platform}_secret", "")))
 
     def send(self, title: str, payload: dict) -> bool:
         """向所有已配置后端发送推送，只要有一个成功即视为成功"""
@@ -597,7 +731,7 @@ class Checker:
     def checkin_all(self):
         """执行所有签到任务"""
         cookie_count = len(self.config.cookies_list)
-        domain_count = len(self.config.DOMAINS)
+        domain_count = len(self.config.domains)
         total_tasks = cookie_count * domain_count
         task_idx = 0
 
@@ -606,7 +740,7 @@ class Checker:
         for cookie_idx, cookie in enumerate(self.config.cookies_list, 1):
             logger.info(f"{LogEmoji.START} ========== 开始处理 Cookie {cookie_idx} ==========")
 
-            for domain in self.config.DOMAINS:
+            for domain in self.config.domains:
                 task_idx += 1
                 logger.info(f"{LogEmoji.INFO} ----- 任务 {task_idx}/{total_tasks}: {LogEmoji.COOKIE}[{cookie_idx}] on {LogEmoji.DOMAIN}[{domain}] -----")
 
@@ -628,10 +762,12 @@ class Checker:
             self._log(cookie_idx, domain, LogEmoji.STATUS, "查询剩余天数")
             days_str, status_code = api.get_status(cookie)
             result.days = days_str
+            result.email = api.email
 
             self._log(cookie_idx, domain, LogEmoji.CHECKIN, "执行签到")
             checkin_result = api.checkin(cookie)
             result.status = checkin_result["status"]
+            result.points = checkin_result.get("points", "0")
             result.code = checkin_result.get("code", CheckinStatus.FAILURE)
 
             self._log(cookie_idx, domain, LogEmoji.POINTS, "查询总积分")
@@ -646,7 +782,17 @@ class Checker:
                     LogEmoji.EXCHANGE,
                     f"开始兑换 {self.config.exchange_plan} (需要 {required_points} 积分)",
                 )
-                result.exchange = api.exchange(cookie, self.config.exchange_plan, required_points)
+                # 积分不足不调用兑换接口；查询失败时不使用 0 误判为不足。
+                if points_str == "None 积分" or result.code == CheckinStatus.FAILURE:
+                    result.exchange = "⏭️查询或签到失败，跳过兑换"
+                elif points_num < required_points:
+                    result.exchange = f"⏭️积分不足({points_num}/{required_points})"
+                else:
+                    result.exchange = api.exchange(cookie, self.config.exchange_plan, required_points)
+                    if result.exchange.startswith("🎁"):
+                        # 兑换后重新查询，显示实际剩余天数与积分。
+                        result.days, _ = api.get_status(cookie)
+                        result.points_total, _ = api.get_points(cookie)
             else:
                 result.exchange = "未配置兑换计划，跳过自动兑换"
                 self._log(cookie_idx, domain, LogEmoji.INFO, "未配置兑换计划，跳过自动兑换")
@@ -668,16 +814,17 @@ class Checker:
         status_emoji_map = {
             CheckinStatus.SUCCESS: LogEmoji.SUCCESS,
             CheckinStatus.REPEAT: LogEmoji.REPEAT,
-            CheckinStatus.FAILURE: LogEmoji.ERROR,
+            CheckinStatus.FAILURE: LogEmoji.FAIL,
         }
-        title = f"GLaDOS 签到 · 成功 {success_count} · 失败 {fail_count} · 重复 {repeat_count}"
+        title = f"GLaDOS 签到完成✅{success_count}❌{fail_count}🔄{repeat_count}"
 
         rows = []
         for i, res in enumerate(results, 1):
             rows.append({
                 "index": i,
                 "emoji": status_emoji_map.get(res["code"], LogEmoji.ERROR),
-                "status": res["status"],
+                "status": "已签到" if res["code"] == CheckinStatus.REPEAT else res["status"],
+                "email": res["email"],
                 "domain": res["domain"],
                 "points": res["points"],
                 "days": res["days"],

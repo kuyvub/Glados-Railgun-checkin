@@ -50,6 +50,15 @@ jobs:
       env:
         PUSHDEER_SENDKEY: ${{ secrets.PUSHDEER_SENDKEY }}
         SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+        # 0 关闭 Railgun；未设置时由脚本默认启用。
+        RAILGUN: ${{ secrets.RAILGUN }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+        DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+        DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
+        WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
         GLADOS_COOKIES: ${{ secrets.GLADOS_COOKIES }}
         GLADOS_EXCHANGE_PLAN: ${{ secrets.GLADOS_EXCHANGE_PLAN }}
         GLADOS_VERBOSE: ${{ secrets.GLADOS_VERBOSE }}

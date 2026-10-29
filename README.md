@@ -1,6 +1,6 @@
 # Glados自动签到
 
-> 基于 GitHub Actions 的 GLaDOS 自动签到工具，支持多账号与多通道推送（PushDeer / Server酱）。
+> 基于 GitHub Actions 的 GLaDOS 自动签到工具，支持多账号与多通道推送（PushDeer / Server酱 / Telegram / 飞书 / 钉钉 / 企业微信）。
 
 ## 文件结构
 
@@ -40,7 +40,7 @@
 
   > 参考格式：`koa:sess=eyJ1c2xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxAwMH0=; koa:sess.sig=xJkOxxxxxxxxxxxxxxxtnM;`
 
-- 多账号请在 `COOKIES` 中添加多个 cookies，中间使用 `&` 连接即可（例如：`c1&c2&c3`）
+- 多账号请在 `GLADOS_COOKIES` 中添加多个 cookies，中间使用 `&` 连接即可（例如：`c1&c2&c3`）
 
 ![图片加载失败](imgs/2.png)
 ![图片加载失败](imgs/3.png)
@@ -64,11 +64,67 @@
 - **PushDeer**：添加 `repository secret` 命名为 `PUSHDEER_SENDKEY`，其值对应 PushDeer key（[获取地址](https://www.pushdeer.com/product.html)）。
 - **Server酱**：添加 `repository secret` 命名为 `SERVERCHAN_SENDKEY`，其值对应 Server酱 SendKey（[获取地址](https://sct.ftqq.com/)）。
 
+#### 3.4 RAILGUN（非必填）
+
+添加名为 `RAILGUN` 的 repository secret：
+
+| 值 | 行为 |
+|---|---|
+| `0` | 仅执行 `glados.cloud` 签到；不请求、不统计、不展示 `railgun.info` |
+| `1` | 执行并展示 `glados.cloud` 和 `railgun.info` 两站签到 |
+| 未设置或空值 | 默认 `1`，兼容原有双站行为 |
+
+仅接受 `0` / `1`，其他值会报配置错误。开关对全部账号生效；当前仍会将每个 Cookie 用于每个启用站点，请提供相应站点可用的 Cookie。
+
+#### 3.5 新增推送渠道（非必填）
+
+以下名称均为 `Settings` → `Secrets and variables` → `Actions` 下的 repository secrets；只配置需要的渠道即可，支持与 PushDeer、Server酱一起发送。
+
+| 渠道 | 必填 Secrets | 可选 Secrets |
+|---|---|---|
+| Telegram | `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` | 无 |
+| 飞书群机器人 | `FEISHU_WEBHOOK`（完整 Webhook URL） | `FEISHU_SECRET`（开启签名校验时必填） |
+| 钉钉群机器人 | `DINGTALK_WEBHOOK`（完整 Webhook URL，含 access_token） | `DINGTALK_SECRET`（开启加签时必填） |
+| 企业微信群机器人 | `WECOM_WEBHOOK`（完整 Webhook URL，含 key） | 无 |
+
+- **Telegram**：通过 BotFather 创建机器人获取 Token；私聊先向机器人发送 `/start`，或将机器人加入目标群组，使用目标会话的 Chat ID（群组通常是负数）。可通过官方 `getUpdates` 接口查看会话 ID，不要将 Token 发给第三方。两个 Secrets 必须同时配置。
+- **飞书 / 钉钉 / 企业微信**：在目标群添加自定义机器人并复制 Webhook。飞书和钉钉启用签名校验时，另填对应 Secret。使用关键词校验时可设置关键词 `GLaDOS`；若同时启用 IP 白名单，还需确保运行环境符合白名单要求。
+- 新增渠道使用纯文本，保留邮箱中的 `***` 和换行；多账号消息过长会自动分片。接口的 HTTP 状态及业务返回码均会检查，单个渠道发送失败仍会继续发送其他渠道。
+- 本地运行时使用同名环境变量；安装依赖：`pip install -r requirements.txt`，运行：`python checkin.py`。
+
+接口说明：[Telegram](https://core.telegram.org/bots/api#sendmessage)、[飞书](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)、[钉钉](https://open.dingtalk.com/document/robots/customize-robot-security-settings)、[企业微信](https://developer.work.weixin.qq.com/document/path/91770)。
+
+### 签到结果示例与邮箱脱敏
+
+邮箱取自账号状态接口，只在结果、日志摘要和推送中显示脱敏版本。用户名长度大于 3 时保留前两位及末位（例如 `kuyvub@gmail.com` → `ku***b@gmail.com`）；2–3 位仅保留首位，1 位全部隐藏。接口失败或未返回有效邮箱时显示 `邮箱未知`，仍保留序号以定位对应 Cookie。
+
+单站示例（`RAILGUN=0`，`GLADOS_EXCHANGE_PLAN=plan500`）：
+
+```text
+GLaDOS 签到完成✅1❌0🔄2
+
+1.ku***b@gmail.com🔄已签到 | 总积分:59 积分 | 剩余:352 天 | 兑换:⏭️积分不足(59/500)
+2.bi***e@gmail.com✅成功(+11积分) | 总积分:2 积分 | 剩余:171 天 | 兑换:🎁兑换成功(+100天)
+3.hu***n@gmail.com🔄已签到 | 总积分:328 积分 | 剩余:123 天 | 兑换:⏭️积分不足(328/500)
+```
+
+标题统计实际执行的账号 × 站点任务数，分别为成功、失败、已签到次数。双站启用时，每行额外显示域名以区分同一邮箱。兑换成功后重新查询积分和天数，示例中的 502 积分兑换后显示 2 积分，71 天增加后显示 171 天。未配置兑换计划时提示跳过自动兑换。
+
+### 开发验证
+
+```shell
+python -m unittest discover -s tests -v
+```
+
+测试使用模拟 HTTP 响应，不需要真实 Cookie 或推送密钥，不会实际签到、兑换或发送通知。
+
 ### Star 本仓库
 
 ![图片加载失败](imgs/4.png)
 
 ## 更新日志
+
+- **2026-10（dev）**：签到邮箱脱敏展示；新增 `RAILGUN` 双站开关；支持 Telegram、飞书、钉钉、企业微信推送及可选加签；修复签到所得积分显示，积分不足跳过兑换，兑换后刷新余额与天数。
 
 - **2026-01**: 重构代码，添加日志输出方便定位，支持新版网址，支持配置积分兑换策略。
 - **2026-04**: 优化代码逻辑与日志输出，支持[新版域名](https://railgun.info)，在 `GLADOS_COOKIES` 中添加新版域名下的 cookies 即可使用。
