@@ -15,6 +15,20 @@ class CheckinTests(unittest.TestCase):
         with patch.dict(os.environ, values, clear=True):
             return app.Config()
 
+    def test_cookie_separators(self):
+        cookies = ["koa:sess=first; koa:sess.sig=a;", "koa:sess=second; koa:sess.sig=b;", "koa:sess=third;"]
+        for separator in ("&", "|||", "\n", "\r\n", "\r"):
+            with self.subTest(separator=repr(separator)):
+                self.assertEqual(self.config(GLADOS_COOKIES=separator.join(cookies)).cookies_list, cookies)
+        mixed = f" & ||| \r\n {cookies[0]} & \n {cookies[1]} ||| {cookies[2]} \n&||| "
+        self.assertEqual(self.config(GLADOS_COOKIES=mixed).cookies_list, cookies)
+        # 单个竖线和分号属于 Cookie 内容，不能当作分隔符。
+        single = "koa:sess=a|b; koa:sess.sig=c;"
+        self.assertEqual(self.config(GLADOS_COOKIES=single).cookies_list, [single])
+        self.assertEqual(self.config(GLADOS_COOKIES="").cookies_list, [])
+        with self.assertRaises(ValueError):
+            self.config(GLADOS_COOKIES=" & ||| \r\n ")
+
     def test_mask_email(self):
         for email, masked in [("kuyvub@gmail.com", "ku***b@gmail.com"),
                               ("abc@test.com", "a***@test.com"),

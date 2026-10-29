@@ -40,7 +40,21 @@
 
   > 参考格式：`koa:sess=eyJ1c2xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxAwMH0=; koa:sess.sig=xJkOxxxxxxxxxxxxxxxtnM;`
 
-- 多账号请在 `GLADOS_COOKIES` 中添加多个 cookies，中间使用 `&` 连接即可（例如：`c1&c2&c3`）
+- 多账号请在 `GLADOS_COOKIES` 中添加多个 Cookie，支持 `&`、`|||` 或换行分隔，也可以混合使用。空行、连续分隔符和每项首尾空白会被忽略；Cookie 内部的分号保持不变。以下三种写法等效：
+
+  ```text
+  c1&c2&c3
+  ```
+
+  ```text
+  c1|||c2|||c3
+  ```
+
+  ```text
+  c1
+  c2
+  c3
+  ```
 
 ![图片加载失败](imgs/2.png)
 ![图片加载失败](imgs/3.png)
@@ -59,10 +73,23 @@
 
 #### 3.3 手机推送（非必填）
 
-支持多个推送后端，可在 `Settings`→`Secrets and variables`→`Action` 中按需配置，**任一后端配置后即会推送，支持同时配置多个（都发）**：
+以下名称均为 `Settings` → `Secrets and variables` → `Actions` 下的 repository secrets。只配置需要的渠道即可，支持同时配置多个，所有已配置渠道都会发送。
 
-- **PushDeer**：添加 `repository secret` 命名为 `PUSHDEER_SENDKEY`，其值对应 PushDeer key（[获取地址](https://www.pushdeer.com/product.html)）。
-- **Server酱**：添加 `repository secret` 命名为 `SERVERCHAN_SENDKEY`，其值对应 Server酱 SendKey（[获取地址](https://sct.ftqq.com/)）。
+| 渠道 | 必填 Secrets | 可选 Secrets |
+|---|---|---|
+| PushDeer | `PUSHDEER_SENDKEY`（[获取 Key](https://www.pushdeer.com/product.html)） | 无 |
+| Server酱 | `SERVERCHAN_SENDKEY`（[获取 SendKey](https://sct.ftqq.com/)） | 无 |
+| Telegram | `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` | 无 |
+| 飞书群机器人 | `FEISHU_WEBHOOK`（完整 Webhook URL） | `FEISHU_SECRET`（开启签名校验时必填） |
+| 钉钉群机器人 | `DINGTALK_WEBHOOK`（完整 Webhook URL，含 access_token） | `DINGTALK_SECRET`（开启加签时必填） |
+| 企业微信群机器人 | `WECOM_WEBHOOK`（完整 Webhook URL，含 key） | 无 |
+
+- **Telegram**：通过 BotFather 创建机器人获取 Token；私聊先向机器人发送 `/start`，或将机器人加入目标群组，使用目标会话的 Chat ID（群组通常是负数）。可通过官方 `getUpdates` 接口查看会话 ID，不要将 Token 发给第三方。两个 Secrets 必须同时配置。
+- **飞书 / 钉钉 / 企业微信**：在目标群添加自定义机器人并复制 Webhook。飞书和钉钉启用签名校验时，另填对应 Secret。使用关键词校验时可设置关键词 `GLaDOS`；若同时启用 IP 白名单，还需确保运行环境符合白名单要求。
+- Telegram、飞书、钉钉、企业微信使用纯文本，保留邮箱中的 `***` 和换行；多账号消息过长会自动分片。接口的 HTTP 状态及业务返回码均会检查，单个渠道发送失败仍会继续发送其他渠道。
+- 本地运行时使用同名环境变量；安装依赖：`pip install -r requirements.txt`，运行：`python checkin.py`。
+
+接口说明：[Telegram](https://core.telegram.org/bots/api#sendmessage)、[飞书](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)、[钉钉](https://open.dingtalk.com/document/robots/customize-robot-security-settings)、[企业微信](https://developer.work.weixin.qq.com/document/path/91770)。
 
 #### 3.4 RAILGUN（非必填）
 
@@ -75,24 +102,6 @@
 | 未设置或空值 | 默认 `1`，兼容原有双站行为 |
 
 仅接受 `0` / `1`，其他值会报配置错误。开关对全部账号生效；当前仍会将每个 Cookie 用于每个启用站点，请提供相应站点可用的 Cookie。
-
-#### 3.5 新增推送渠道（非必填）
-
-以下名称均为 `Settings` → `Secrets and variables` → `Actions` 下的 repository secrets；只配置需要的渠道即可，支持与 PushDeer、Server酱一起发送。
-
-| 渠道 | 必填 Secrets | 可选 Secrets |
-|---|---|---|
-| Telegram | `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` | 无 |
-| 飞书群机器人 | `FEISHU_WEBHOOK`（完整 Webhook URL） | `FEISHU_SECRET`（开启签名校验时必填） |
-| 钉钉群机器人 | `DINGTALK_WEBHOOK`（完整 Webhook URL，含 access_token） | `DINGTALK_SECRET`（开启加签时必填） |
-| 企业微信群机器人 | `WECOM_WEBHOOK`（完整 Webhook URL，含 key） | 无 |
-
-- **Telegram**：通过 BotFather 创建机器人获取 Token；私聊先向机器人发送 `/start`，或将机器人加入目标群组，使用目标会话的 Chat ID（群组通常是负数）。可通过官方 `getUpdates` 接口查看会话 ID，不要将 Token 发给第三方。两个 Secrets 必须同时配置。
-- **飞书 / 钉钉 / 企业微信**：在目标群添加自定义机器人并复制 Webhook。飞书和钉钉启用签名校验时，另填对应 Secret。使用关键词校验时可设置关键词 `GLaDOS`；若同时启用 IP 白名单，还需确保运行环境符合白名单要求。
-- 新增渠道使用纯文本，保留邮箱中的 `***` 和换行；多账号消息过长会自动分片。接口的 HTTP 状态及业务返回码均会检查，单个渠道发送失败仍会继续发送其他渠道。
-- 本地运行时使用同名环境变量；安装依赖：`pip install -r requirements.txt`，运行：`python checkin.py`。
-
-接口说明：[Telegram](https://core.telegram.org/bots/api#sendmessage)、[飞书](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)、[钉钉](https://open.dingtalk.com/document/robots/customize-robot-security-settings)、[企业微信](https://developer.work.weixin.qq.com/document/path/91770)。
 
 ### 签到结果示例与邮箱脱敏
 

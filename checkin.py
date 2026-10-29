@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import os
+import re
 import time
 import sys
 from dataclasses import asdict, dataclass
@@ -167,7 +168,8 @@ class Config:
             logger.warning(f"{LogEmoji.WARNING} 环境变量 '{self.ENV_COOKIES}' 未设置。")
             self.cookies_list = []
         else:
-            self.cookies_list = [cookie.strip() for cookie in raw_cookies_env.split("&") if cookie.strip()]
+            # 支持 &、|||、换行及混合分隔；忽略空行和首尾空白，保留 Cookie 内的分号。
+            self.cookies_list = [cookie.strip() for cookie in re.split(r"&|\|\|\||[\r\n]+", raw_cookies_env) if cookie.strip()]
             if not self.cookies_list:
                 raise ValueError(f"环境变量 '{self.ENV_COOKIES}' 已设置，但未包含任何有效的 Cookie。")
 
