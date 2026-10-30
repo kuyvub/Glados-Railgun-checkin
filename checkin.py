@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import hmac
+import json
 import os
 import re
 import time
@@ -135,7 +136,12 @@ class Config:
         self.verbose: bool = self.DEFAULT_VERBOSE
         # 新渠道只在凭证完整时启用；密钥不会写入日志。
         for name in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "FEISHU_WEBHOOK",
-                     "FEISHU_SECRET", "DINGTALK_WEBHOOK", "DINGTALK_SECRET", "WECOM_WEBHOOK"):
+                     "FEISHU_SECRET", "DINGTALK_WEBHOOK", "DINGTALK_SECRET", "WECOM_WEBHOOK",
+                     "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_RECEIVE_ID",
+                     "FEISHU_RECEIVE_ID_TYPE", "DINGTALK_APP_KEY", "DINGTALK_APP_SECRET",
+                     "DINGTALK_ROBOT_CODE", "DINGTALK_USER_ID", "WECOM_CORP_ID",
+                     "WECOM_CORP_SECRET", "WECOM_AGENT_ID", "WECOM_TO_USER",
+                     "PUSHPLUS_TOKEN", "YUNHU_BOT_TOKEN", "YUNHU_RECV_ID", "YUNHU_RECV_TYPE"):
             setattr(self, name.lower(), os.environ.get(name, "").strip())
         # 未设置时兼容原有双站行为；显式 0 才关闭 Railgun。
         railgun = os.environ.get(self.ENV_RAILGUN, "").strip() or "1"
@@ -522,7 +528,7 @@ def render_payload(payload: dict, line_sep: str = "\n") -> str:
     for r in payload.get("rows", []):
         # 双站同时启用时保留域名，避免相同邮箱的两条结果混淆。
         domain = f" [{r['domain']}]" if len(domains) > 1 else ""
-        status = f"成功(+{r['points']}积分)" if r["emoji"] == LogEmoji.SUCCESS else r["status"]
+        status = f"签到成功(+{r['points']}积分)" if r["emoji"] == LogEmoji.SUCCESS else r["status"]
         line = (
             f"{r['index']}.{r.get('email', '邮箱未知')}{r['emoji']}{status}{domain}"
             f" | 总积分:{r['points_total']} | 剩余:{r['days']} | 兑换:{r['exchange']}"
@@ -617,17 +623,28 @@ class HTTPPushBackend(PushBackend):
         # 每片均带标题，确保机器人关键词校验在后续分片中仍有效。
         return [f"{title}\n\n{chunk}" for chunk in split_message(self._render(payload), 1600)] or [title]
 
-    def _post(self, url: str, body: dict, success_key: str, success_value, params=None) -> bool:
+    def _request(self, method: str, url: str, **kwargs) -> Optional[dict]:
         try:
-            response = requests.post(url, json=body, params=params, timeout=(10, 30))
+            response = getattr(requests, method)(url, timeout=(10, 30), **kwargs)
             response.raise_for_status()
             data = response.json()
-            if isinstance(data, dict) and data.get(success_key) == success_value:
-                return True
-            logger.error(f"[{self.name}] 推送失败：接口业务状态异常，请检查机器人配置。")
+            if isinstance(data, dict):
+                return data
+            logger.error(f"[{self.name}] 推送失败：接口响应格式异常。")
         except (requests.RequestException, ValueError):
-            # requests 异常可能包含 token / webhook；禁止直接输出异常或响应正文。
+            # 异常可能包含凭证、URL 或响应正文，不直接输出。
             logger.error(f"[{self.name}] 推送失败：网络、HTTP 状态或响应格式异常。")
+        return None
+
+    def _post(self, url: str, body: dict, success_key: str, success_value, params=None, headers=None) -> bool:
+        kwargs = {"json": body, "params": params}
+        if headers:
+            kwargs["headers"] = headers
+        data = self._request("post", url, **kwargs)
+        if data is not None and data.get(success_key) == success_value:
+            return True
+        if data is not None:
+            logger.error(f"[{self.name}] 推送失败：接口业务状态异常，请检查推送配置。")
         return False
 
 
@@ -647,7 +664,7 @@ class TelegramBackend(HTTPPushBackend):
 
 
 class WebhookBackend(HTTPPushBackend):
-    """飞书、钉钉、企业微信群机器人；支持飞书与钉钉可选加签。"""
+    """飞书、钉钉、企业微信 Webhook 机器人；支持飞书与钉钉可选加签。"""
 
     def __init__(self, platform: str, webhook: str, secret: str = ""):
         self.platform = platform
@@ -682,6 +699,98 @@ class WebhookBackend(HTTPPushBackend):
         return all(results)
 
 
+class PushPlusBackend(HTTPPushBackend):
+    """PushPlus 使用纯文本模板，避免邮箱星号被解释为 Markdown。"""
+
+    name = "PushPlus"
+
+    def __init__(self, token: str):
+        self.token = token
+
+    def send(self, title: str, payload: dict) -> bool:
+        return self._post("https://www.pushplus.plus/send", {
+            "token": self.token, "title": title,
+            "content": self._render(payload), "template": "txt",
+        }, "code", 200)
+
+
+class YunhuBackend(HTTPPushBackend):
+    name = "云湖机器人"
+
+    def __init__(self, token: str, recv_id: str, recv_type: str = "user"):
+        self.token, self.recv_id, self.recv_type = token, recv_id, recv_type
+
+    def send(self, title: str, payload: dict) -> bool:
+        results = [self._post("https://chat-go.jwzhd.com/open-apis/v1/bot/send", {
+            "recvId": self.recv_id, "recvType": self.recv_type,
+            "contentType": "text", "content": {"text": text},
+        }, "code", 1, params={"token": self.token}) for text in self._messages(title, payload)]
+        return all(results)
+
+
+class ApplicationBackend(HTTPPushBackend):
+    """应用身份推送：每次汇总获取一次短期凭证，再发送全部分片。"""
+
+    def __init__(self, platform: str, config: Config):
+        self.platform, self.config = platform, config
+        self.name = {"feishu": "飞书应用机器人", "dingtalk": "钉钉应用机器人",
+                     "wecom": "企业微信自建应用"}[platform]
+
+    def _token(self) -> Optional[str]:
+        c = self.config
+        if self.platform == "feishu":
+            data = self._request("post", "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+                                 json={"app_id": c.feishu_app_id, "app_secret": c.feishu_app_secret})
+            token = data.get("tenant_access_token") if data and data.get("code") == 0 else None
+        elif self.platform == "dingtalk":
+            data = self._request("post", "https://api.dingtalk.com/v1.0/oauth2/accessToken",
+                                 json={"appKey": c.dingtalk_app_key, "appSecret": c.dingtalk_app_secret})
+            token = data.get("accessToken") if data and not data.get("code") else None
+        else:
+            data = self._request("get", "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
+                                 params={"corpid": c.wecom_corp_id, "corpsecret": c.wecom_corp_secret})
+            token = data.get("access_token") if data and data.get("errcode") == 0 else None
+        if not isinstance(token, str) or not token:
+            logger.error(f"[{self.name}] 获取访问凭证失败，请检查应用配置和权限。")
+            return None
+        return token
+
+    def send(self, title: str, payload: dict) -> bool:
+        token = self._token()
+        if not token:
+            return False
+        c, results = self.config, []
+        for text in self._messages(title, payload):
+            if self.platform == "feishu":
+                ok = self._post("https://open.feishu.cn/open-apis/im/v1/messages", {
+                    "receive_id": c.feishu_receive_id, "msg_type": "text",
+                    "content": json.dumps({"text": text}, ensure_ascii=False),
+                }, "code", 0, params={"receive_id_type": c.feishu_receive_id_type or "open_id"},
+                    headers={"Authorization": f"Bearer {token}"})
+            elif self.platform == "dingtalk":
+                data = self._request("post", "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend",
+                                     headers={"x-acs-dingtalk-access-token": token}, json={
+                    "robotCode": c.dingtalk_robot_code, "userIds": [c.dingtalk_user_id],
+                    "msgKey": "sampleText", "msgParam": json.dumps({"content": text}, ensure_ascii=False),
+                })
+                ok = bool(data and data.get("processQueryKey") and not data.get("code")
+                          and not data.get("invalidStaffIdList") and not data.get("flowControlledStaffIdList"))
+                if not ok:
+                    logger.error(f"[{self.name}] 推送失败：接口业务状态异常或接收成员无效、被限流。")
+            else:
+                data = self._request("post", "https://qyapi.weixin.qq.com/cgi-bin/message/send",
+                                     params={"access_token": token}, json={
+                    "touser": c.wecom_to_user, "agentid": int(c.wecom_agent_id),
+                    "msgtype": "text", "text": {"content": text},
+                })
+                ok = bool(data and data.get("errcode") == 0 and not data.get("invaliduser")
+                          and not data.get("unlicenseduser"))
+                if not ok:
+                    logger.error(f"[{self.name}] 推送失败：接口业务状态异常或接收成员无效、无许可。")
+            results.append(ok)
+        return all(results)
+
+
 class PushService:
     """推送服务：聚合多个后端，向全部已配置后端发送（都发）"""
 
@@ -696,7 +805,32 @@ class PushService:
                 self.backends.append(TelegramBackend(config.telegram_bot_token, config.telegram_chat_id))
             elif config.telegram_bot_token or config.telegram_chat_id:
                 logger.warning("Telegram 需要同时配置 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID，跳过该渠道。")
-            for platform in ("feishu", "dingtalk", "wecom"):
+            if config.pushplus_token:
+                self.backends.append(PushPlusBackend(config.pushplus_token))
+            if config.yunhu_bot_token and config.yunhu_recv_id:
+                recv_type = config.yunhu_recv_type or "user"
+                if recv_type in ("user", "group"):
+                    self.backends.append(YunhuBackend(config.yunhu_bot_token, config.yunhu_recv_id, recv_type))
+                else:
+                    logger.warning("YUNHU_RECV_TYPE 仅支持 user 或 group，跳过云湖渠道。")
+            elif config.yunhu_bot_token or config.yunhu_recv_id:
+                logger.warning("云湖需要同时配置 YUNHU_BOT_TOKEN 和 YUNHU_RECV_ID，跳过该渠道。")
+            app_fields = {
+                "feishu": ("app_id", "app_secret", "receive_id"),
+                "dingtalk": ("app_key", "app_secret", "robot_code", "user_id"),
+                "wecom": ("corp_id", "corp_secret", "agent_id", "to_user"),
+            }
+            for platform, fields in app_fields.items():
+                values = [getattr(config, f"{platform}_{field}") for field in fields]
+                valid = all(values)
+                if valid and platform == "feishu":
+                    valid = (config.feishu_receive_id_type or "open_id") in ("open_id", "user_id", "union_id", "email", "chat_id")
+                if valid and platform == "wecom":
+                    valid = config.wecom_agent_id.isascii() and config.wecom_agent_id.isdecimal() and int(config.wecom_agent_id) > 0
+                if valid:
+                    self.backends.append(ApplicationBackend(platform, config))
+                elif any(values):
+                    logger.warning(f"{platform} 应用凭证不完整或配置无效，跳过应用推送。")
                 webhook = getattr(config, f"{platform}_webhook")
                 if webhook:
                     self.backends.append(WebhookBackend(platform, webhook, getattr(config, f"{platform}_secret", "")))
@@ -825,7 +959,7 @@ class Checker:
             rows.append({
                 "index": i,
                 "emoji": status_emoji_map.get(res["code"], LogEmoji.ERROR),
-                "status": "已签到" if res["code"] == CheckinStatus.REPEAT else res["status"],
+                "status": "重复签到" if res["code"] == CheckinStatus.REPEAT else res["status"],
                 "email": res["email"],
                 "domain": res["domain"],
                 "points": res["points"],

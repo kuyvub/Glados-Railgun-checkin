@@ -59,6 +59,22 @@ jobs:
         DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
         DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
         WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
+        FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+        FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+        FEISHU_RECEIVE_ID: ${{ secrets.FEISHU_RECEIVE_ID }}
+        FEISHU_RECEIVE_ID_TYPE: ${{ secrets.FEISHU_RECEIVE_ID_TYPE }}
+        DINGTALK_APP_KEY: ${{ secrets.DINGTALK_APP_KEY }}
+        DINGTALK_APP_SECRET: ${{ secrets.DINGTALK_APP_SECRET }}
+        DINGTALK_ROBOT_CODE: ${{ secrets.DINGTALK_ROBOT_CODE }}
+        DINGTALK_USER_ID: ${{ secrets.DINGTALK_USER_ID }}
+        WECOM_CORP_ID: ${{ secrets.WECOM_CORP_ID }}
+        WECOM_CORP_SECRET: ${{ secrets.WECOM_CORP_SECRET }}
+        WECOM_AGENT_ID: ${{ secrets.WECOM_AGENT_ID }}
+        WECOM_TO_USER: ${{ secrets.WECOM_TO_USER }}
+        PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        YUNHU_BOT_TOKEN: ${{ secrets.YUNHU_BOT_TOKEN }}
+        YUNHU_RECV_ID: ${{ secrets.YUNHU_RECV_ID }}
+        YUNHU_RECV_TYPE: ${{ secrets.YUNHU_RECV_TYPE }}
         GLADOS_COOKIES: ${{ secrets.GLADOS_COOKIES }}
         GLADOS_EXCHANGE_PLAN: ${{ secrets.GLADOS_EXCHANGE_PLAN }}
         GLADOS_VERBOSE: ${{ secrets.GLADOS_VERBOSE }}

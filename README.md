@@ -1,6 +1,6 @@
 # Glados自动签到
 
-> 基于 GitHub Actions 的 GLaDOS 自动签到工具，支持多账号与多通道推送（PushDeer / Server酱 / Telegram / 飞书 / 钉钉 / 企业微信）。
+> 基于 GitHub Actions 的 GLaDOS 自动签到工具，支持多账号与多通道推送（PushDeer / Server酱 / Telegram / 飞书 / 钉钉 / 企业微信 / PushPlus / 云湖机器人）。
 
 ## 文件结构
 
@@ -80,16 +80,26 @@
 | PushDeer | `PUSHDEER_SENDKEY`（[获取 Key](https://www.pushdeer.com/product.html)） | 无 |
 | Server酱 | `SERVERCHAN_SENDKEY`（[获取 SendKey](https://sct.ftqq.com/)） | 无 |
 | Telegram | `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` | 无 |
-| 飞书群机器人 | `FEISHU_WEBHOOK`（完整 Webhook URL） | `FEISHU_SECRET`（开启签名校验时必填） |
-| 钉钉群机器人 | `DINGTALK_WEBHOOK`（完整 Webhook URL，含 access_token） | `DINGTALK_SECRET`（开启加签时必填） |
-| 企业微信群机器人 | `WECOM_WEBHOOK`（完整 Webhook URL，含 key） | 无 |
+| 飞书应用机器人（单聊） | `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_RECEIVE_ID` | `FEISHU_RECEIVE_ID_TYPE`（默认 `open_id`） |
+| 钉钉应用机器人（单聊） | `DINGTALK_APP_KEY`、`DINGTALK_APP_SECRET`、`DINGTALK_ROBOT_CODE`、`DINGTALK_USER_ID` | 无 |
+| 企业微信自建应用（指定成员） | `WECOM_CORP_ID`、`WECOM_CORP_SECRET`、`WECOM_AGENT_ID`、`WECOM_TO_USER` | 无 |
+| 飞书机器人（Webhook） | `FEISHU_WEBHOOK`（完整 Webhook URL） | `FEISHU_SECRET`（开启签名校验时必填） |
+| 钉钉机器人（Webhook） | `DINGTALK_WEBHOOK`（完整 Webhook URL，含 access_token） | `DINGTALK_SECRET`（开启加签时必填） |
+| 企业微信机器人（Webhook） | `WECOM_WEBHOOK`（完整 Webhook URL，含 key） | 无 |
+| PushPlus（推送加） | `PUSHPLUS_TOKEN`（[获取 Token](https://www.pushplus.plus/)） | 无 |
+| 云湖机器人 | `YUNHU_BOT_TOKEN`、`YUNHU_RECV_ID` | `YUNHU_RECV_TYPE`（默认 `user`） |
 
-- **Telegram**：通过 BotFather 创建机器人获取 Token；私聊先向机器人发送 `/start`，或将机器人加入目标群组，使用目标会话的 Chat ID（群组通常是负数）。可通过官方 `getUpdates` 接口查看会话 ID，不要将 Token 发给第三方。两个 Secrets 必须同时配置。
-- **飞书 / 钉钉 / 企业微信**：在目标群添加自定义机器人并复制 Webhook。飞书和钉钉启用签名校验时，另填对应 Secret。使用关键词校验时可设置关键词 `GLaDOS`；若同时启用 IP 白名单，还需确保运行环境符合白名单要求。
-- Telegram、飞书、钉钉、企业微信使用纯文本，保留邮箱中的 `***` 和换行；多账号消息过长会自动分片。接口的 HTTP 状态及业务返回码均会检查，单个渠道发送失败仍会继续发送其他渠道。
+- **Telegram**：通过 BotFather 创建机器人获取 Token；先向机器人发送 `/start`，使用目标会话的 Chat ID。可通过官方 `getUpdates` 接口查看会话 ID，不要将 Token 发给第三方。两个 Secrets 必须同时配置。
+- **飞书应用机器人**：在飞书开发者后台创建企业自建应用，启用机器人，开通「以应用的身份发消息」权限（`im:message:send_as_bot`），发布应用并确保接收用户在可用范围内。填写应用的 App ID、App Secret 和接收用户的 Open ID，即可单聊接收。若使用其他 ID，将 `FEISHU_RECEIVE_ID_TYPE` 设为匹配的 `user_id` / `union_id` / `email` / `chat_id`；使用 User ID 还需相应权限。
+- **钉钉应用机器人**：在钉钉开发者后台创建企业内部应用并启用机器人，开通「企业内机器人发送消息权限」并发布。填写 AppKey（Client ID）、AppSecret（Client Secret）、机器人 RobotCode 和接收成员的 User ID；确保接收成员在应用可见范围内，并先打开机器人单聊会话。
+- **企业微信自建应用**：在管理后台创建应用，填写企业 ID、应用 Secret、数字 AgentId 和接收成员 UserID（多成员用 `|` 分隔）。接收成员需在应用可见范围内，并按平台要求配置企业可信 IP；GitHub 托管运行器的出口 IP 可能变动，此场景可使用具有固定出口 IP 的自托管运行器。这是应用消息接入方式。
+- **飞书 / 钉钉 / 企业微信 Webhook 机器人**：创建自定义机器人并复制 Webhook。飞书和钉钉启用签名校验时，另填对应 Secret。使用关键词校验时可设置关键词 `GLaDOS`；若同时启用 IP 白名单，还需确保运行环境符合白名单要求。原有 Webhook 配置继续有效；同一平台同时配置应用和 Webhook 时，两种方式都会发送。
+- **PushPlus**：登录推送加获取 Token，配置 `PUSHPLUS_TOKEN`，默认向自己发送，使用 `txt` 纯文本模板保留邮箱星号和换行。接口返回成功表示消息已提交，实际投递结果以平台记录为准。
+- **云湖机器人**：创建机器人获取 Token，关注机器人，配置接收用户 ID 到 `YUNHU_RECV_ID`，默认 `YUNHU_RECV_TYPE=user`。发送到其他目标会话时可设为 `group`，并填入对应会话 ID，机器人需已加入该会话。
+- Telegram、飞书、钉钉、企业微信、云湖使用纯文本，保留邮箱中的 `***` 和换行；多账号消息过长会自动分片。接口的 HTTP 状态及业务返回码均会检查，单个渠道发送失败仍会继续发送其他渠道。应用凭证不完整、接收 ID 类型或 AgentId 无效时，跳过对应应用推送。
 - 本地运行时使用同名环境变量；安装依赖：`pip install -r requirements.txt`，运行：`python checkin.py`。
 
-接口说明：[Telegram](https://core.telegram.org/bots/api#sendmessage)、[飞书](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)、[钉钉](https://open.dingtalk.com/document/robots/customize-robot-security-settings)、[企业微信](https://developer.work.weixin.qq.com/document/path/91770)。
+接口说明：[Telegram](https://core.telegram.org/bots/api#sendmessage)、[飞书应用机器人](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[飞书 Webhook](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)、[钉钉应用机器人](https://open.dingtalk.com/document/orgapp/robots-send-one-on-one-chat-messages-in-batches)、[钉钉 Webhook](https://open.dingtalk.com/document/robots/customize-robot-security-settings)、[企业微信应用消息](https://developer.work.weixin.qq.com/document/path/90236)、[企业微信 Webhook](https://developer.work.weixin.qq.com/document/path/91770)、[PushPlus](https://www.pushplus.plus/doc/guide/api.html)、[云湖](https://www.yhchat.com/document/1-3)。
 
 #### 3.4 RAILGUN（非必填）
 
@@ -112,12 +122,12 @@
 ```text
 GLaDOS 签到完成✅1❌0🔄2
 
-1.ku***b@gmail.com🔄已签到 | 总积分:59 积分 | 剩余:352 天 | 兑换:⏭️积分不足(59/500)
-2.bi***e@gmail.com✅成功(+11积分) | 总积分:2 积分 | 剩余:171 天 | 兑换:🎁兑换成功(+100天)
-3.hu***n@gmail.com🔄已签到 | 总积分:328 积分 | 剩余:123 天 | 兑换:⏭️积分不足(328/500)
+1.ha***o@gmail.com🔄重复签到 | 总积分:59 积分 | 剩余:352 天 | 兑换:⏭️积分不足(59/500)
+2.do***n@gmail.com✅签到成功(+11积分) | 总积分:2 积分 | 剩余:171 天 | 兑换:🎁兑换成功(+100天)
+3.gx***i@gmail.com🔄重复签到 | 总积分:328 积分 | 剩余:123 天 | 兑换:⏭️积分不足(328/500)
 ```
 
-标题统计实际执行的账号 × 站点任务数，分别为成功、失败、已签到次数。双站启用时，每行额外显示域名以区分同一邮箱。兑换成功后重新查询积分和天数，示例中的 502 积分兑换后显示 2 积分，71 天增加后显示 171 天。未配置兑换计划时提示跳过自动兑换。
+标题统计实际执行的账号 × 站点任务数，分别为签到成功、失败、重复签到次数。双站启用时，每行额外显示域名以区分同一邮箱。兑换成功后重新查询积分和天数，示例中的 502 积分兑换后显示 2 积分，71 天增加后显示 171 天。未配置兑换计划时提示跳过自动兑换。
 
 ### 开发验证
 
@@ -133,7 +143,7 @@ python -m unittest discover -s tests -v
 
 ## 更新日志
 
-- **2026-10（dev）**：签到邮箱脱敏展示；新增 `RAILGUN` 双站开关；支持 Telegram、飞书、钉钉、企业微信推送及可选加签；修复签到所得积分显示，积分不足跳过兑换，兑换后刷新余额与天数。
+- **2026-10（dev）**：签到邮箱脱敏展示；新增 `RAILGUN` 双站开关；支持 Telegram、飞书、钉钉、企业微信推送及可选加签，新增飞书/钉钉应用机器人单聊、企业微信自建应用、PushPlus 和云湖机器人；统一使用「签到成功」「重复签到」文案；修复签到所得积分显示，积分不足跳过兑换，兑换后刷新余额与天数。
 
 - **2026-01**: 重构代码，添加日志输出方便定位，支持新版网址，支持配置积分兑换策略。
 - **2026-04**: 优化代码逻辑与日志输出，支持[新版域名](https://railgun.info)，在 `GLADOS_COOKIES` 中添加新版域名下的 cookies 即可使用。
