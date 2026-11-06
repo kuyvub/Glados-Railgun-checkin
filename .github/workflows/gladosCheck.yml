@@ -51,6 +51,9 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    - name: Test checkin protocol
+      run: python -m unittest discover -s tests -v
+
     # 执行 签到脚本
     - name: Running checkin
       run: |
@@ -62,7 +65,7 @@ jobs:
         GLADOS_EXCHANGE_PLAN: ${{ secrets.GLADOS_EXCHANGE_PLAN }}
         GLADOS_VERBOSE: ${{ secrets.GLADOS_VERBOSE }}
 
-    # 签到失败（配置错误会 exit 1）时也要保活，否则恰好错过最需要提醒的那次
+    # 签到失败（配置或账号失败会 exit 1）时也要保活，否则恰好错过最需要提醒的那次
     - name: Keep alive
       if: ${{ !cancelled() }}
       uses: liskin/gh-workflow-keepalive@v1 

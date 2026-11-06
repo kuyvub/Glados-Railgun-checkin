@@ -1,4 +1,7 @@
 import functools
+import hashlib
+import math
+import random
 import json
 import logging
 import os
@@ -40,6 +43,7 @@ class ExchangePlan(Enum):
 class APIEndpoint:
     """API 路径"""
 
+    CHALLENGE = "/api/user/checkin/challenge"
     CHECKIN = "/api/user/checkin"
     STATUS = "/api/user/status"
     POINTS = "/api/user/points"
@@ -159,6 +163,40 @@ def to_int(value: Any) -> Optional[int]:
         return None
 
 
+def to_points(value: Any) -> Optional[float]:
+    """保留小数积分，拒绝布尔值和非有限数。"""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def compute_checkin_proof(nonce: str) -> str:
+    """与官网 checkinProof 一致的 SHA-256 小写十六进制摘要。"""
+    return hashlib.sha256(f"{nonce}.glados-observe-v1".encode("utf-8")).hexdigest()
+
+
+def sanitize_cookie(raw: str) -> str:
+    """清理复制请求头时带入的前缀、外层引号和换行，拒绝无法发送的字符。"""
+    cookie = raw.strip().strip("\"'").strip()
+    cookie = re.sub(r"^cookie\s*:\s*", "", cookie, flags=re.IGNORECASE).strip().strip("\"'")
+    cookie = " ".join(cookie.split())
+    if not cookie.isascii() or any(ord(ch) < 32 or ord(ch) == 127 for ch in cookie):
+        raise ValueError("Cookie 含非 ASCII 或控制字符，请从请求头重新复制完整 Cookie")
+    return cookie
+
+
+def maybe_sleep_schedule_jitter() -> None:
+    """仅 Actions 定时运行时错峰；手动、本地运行立即开始。"""
+    if os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("GITHUB_EVENT_NAME") == "schedule":
+        delay = random.uniform(5, 45)
+        logger.info(f"{LogEmoji.INFO} 定时任务错峰等待 {delay:.1f} 秒")
+        time.sleep(delay)
+
+
 def left_days(data: Optional[dict]) -> Optional[int]:
     """从 /api/user/status 响应取剩余天数；取不到或异常值返回 None"""
     if not isinstance(data, dict):
@@ -196,9 +234,9 @@ def format_days(days: Optional[int]) -> str:
     return "None 天" if days is None else f"{days} 天"
 
 
-def format_points(points: Optional[int]) -> str:
+def format_points(points: Optional[float]) -> str:
     """积分 → 展示文本；取不到时显示 `None 积分`"""
-    return "None 积分" if points is None else f"{points} 积分"
+    return "None 积分" if points is None else f"{points:g} 积分"
 
 
 def log_line(label: str, domain: str, emoji: str, message: str, enabled: bool = True) -> None:
@@ -259,9 +297,11 @@ class CheckinResult:
     """单个账号的签到结果"""
 
     domain: str = UNPROBED
-    points: int = 0  # 本次签到所得积分
+    points: float = 0  # 本次签到所得积分
     days: Optional[int] = None  # 剩余天数；None 表示未取到
-    points_total: Optional[int] = None  # 账户总积分；None 表示未取到
+    points_total: Optional[float] = None  # 账户总积分；None 表示未取到
+    streak: Optional[int] = None  # 连续签到天数
+    plan: str = ""  # 官网返回的套餐名称
     exchange: str = ""  # 仅在真正执行兑换时才有值，不含「未配置」这类配置状态
     note: str = ""  # 附加提示（如剩余天数偏少）
     code: CheckinStatus = CheckinStatus.FAILURE
@@ -360,7 +400,23 @@ class CookieEntry:
         result.days = days
 
         self.log(domain, LogEmoji.POINTS, "查询总积分")
-        result.points_total = api.get_points()
+        summary = api.fetch_points_summary()
+        if summary is not None:
+            total = to_points(summary.get("points"))
+            streak = to_int(summary.get("streak"))
+            if total is not None:
+                result.points_total = total
+            if streak is not None:
+                result.streak = streak
+        status = api.fetch_status()
+        if isinstance(status, dict) and status.get("code") == 0 and isinstance(status.get("data"), dict):
+            payload = status["data"]
+            refreshed_days = left_days(status)
+            if refreshed_days is not None:
+                result.days = refreshed_days
+            result.plan = str(payload.get("level") or "")
+            if not result.plan:
+                result.plan = {0: "Free", 10: "Free", 11: "Edu", 21: "Basic", 31: "Pro", 41: "Team", 51: "Enterprise", -101: "已过期"}.get(to_int(payload.get("vip")), "")
 
         # 签到没成功就去兑换，只会白花积分或再吃一次拒绝，故仅成功/重复时兑换
         if result.code in (CheckinStatus.SUCCESS, CheckinStatus.REPEAT):
@@ -397,8 +453,8 @@ class CookieEntry:
         r = self.result
         status = STATUS_META.get(r.code, (LogEmoji.ERROR, "签到失败"))[1]
         parts = [f"结果: {status}"]
-        if r.code is CheckinStatus.SUCCESS and self.verbose:
-            parts += [f"获得 {r.points} 积分", f"剩余 {format_days(r.days)}", f"总 {format_points(r.points_total)}"]
+        if r.code is CheckinStatus.SUCCESS:
+            parts += [f"获得 {r.points:g} 积分", f"剩余 {format_days(r.days)}", f"总 {format_points(r.points_total)}"]
             if r.exchange:
                 parts.append(r.exchange)
         if r.code is CheckinStatus.SUCCESS:
@@ -407,6 +463,10 @@ class CookieEntry:
             emoji = LogEmoji.REPEAT
         else:
             emoji = LogEmoji.WARNING
+        if r.streak is not None:
+            parts.append(f"连签 {r.streak} 天")
+        if r.plan:
+            parts.append(f"套餐 {r.plan}")
         self.log(r.domain, emoji, ", ".join(parts), force=True)
 
     # ---------------- 域名探测 ----------------
@@ -577,7 +637,7 @@ class Accounts:
             if not CookieEntry.has_session_field(part):
                 logger.warning(f"{LogEmoji.WARNING} 第 {position} 段缺少 koa:sess / gld:sess，已跳过")
                 continue
-            items.append(("", "", part, ""))
+            items.append(("", "", sanitize_cookie(part), ""))
 
         if not items:
             raise ValueError("未解析到任何有效账号")
@@ -595,7 +655,7 @@ class Accounts:
         if unknown:
             raise ValueError(f"第 {position} 项含未知字段 {unknown}，只允许 {list(cls.FIELDS)}")
 
-        cookie = str(item.get("cookie") or "").strip()
+        cookie = sanitize_cookie(str(item.get("cookie") or ""))
         if not cookie:
             raise ValueError(f"第 {position} 项缺少 cookie（必填且不能为空）")
         if not CookieEntry.has_session_field(cookie):
@@ -628,14 +688,15 @@ class Accounts:
 # --------------------------------------------------------------------------- #
 
 
-def earned_points(raw: Dict) -> int:
-    """本次签到所得积分：优先签到记录 list[0].change（顶层 points 未必是本次所得）"""
+def earned_points(raw: Dict) -> float:
+    """新版顶层 points 为本次所得；历史接口回退到最新记录 change。"""
+    points = to_points(raw.get("points"))
+    if points is not None:
+        return points
     records = raw.get("list")
     if isinstance(records, list) and records and isinstance(records[0], dict):
-        change = to_int(records[0].get("change"))
-        if change is not None:
-            return change
-    return to_int(raw.get("points", 0)) or 0
+        return to_points(records[0].get("change")) or 0
+    return 0
 
 
 def log_reject(code: int, raw: Dict, message: str, domain: str, log: Callable[..., None], ua_hint: str = "") -> None:
@@ -662,7 +723,7 @@ def log_reject(code: int, raw: Dict, message: str, domain: str, log: Callable[..
 
 
 def parse_checkin(raw: Optional[Dict], domain: str, log: Callable[..., None], ua_hint: str = "") -> CheckinResult:
-    """把签到响应解析为 CheckinResult（只填 domain/points/code）；log 只用于诊断。"""
+    """解析签到状态、本次积分、余额和连签天数；log 只用于诊断。"""
     result = CheckinResult(domain=domain)
     if not isinstance(raw, dict):
         if raw is not None:
@@ -679,13 +740,18 @@ def parse_checkin(raw: Optional[Dict], domain: str, log: Callable[..., None], ua
         log(LogEmoji.ERROR, f"签到被拒：{message}（服务端认定签到域名不符）", True)
         return result
 
-    if code == CheckinStatus.SUCCESS.value:
+    result.streak = to_int(raw.get("streak"))
+    records = raw.get("list")
+    if isinstance(records, list) and records and isinstance(records[0], dict):
+        result.points_total = to_points(records[0].get("balance"))
+
+    if code == CheckinStatus.REPEAT.value or (code == 0 and raw.get("repeated") is True):
+        log(LogEmoji.REPEAT, f"{{ code : {code}, message : {message} }}", True)
+        result.code = CheckinStatus.REPEAT
+    elif code == CheckinStatus.SUCCESS.value:
         log(LogEmoji.SUCCESS, f"{{ code : {code}, points : {points}, message : {message} }}")
         result.points = points
         result.code = CheckinStatus.SUCCESS
-    elif code == CheckinStatus.REPEAT.value:
-        log(LogEmoji.REPEAT, f"{{ code : {code}, message : {message} }}", True)
-        result.code = CheckinStatus.REPEAT
     else:
         log_reject(code, raw, message, domain, log, ua_hint)
     return result
@@ -729,7 +795,7 @@ class API:
                 total=2,
                 backoff_factor=0.5,
                 status_forcelist=(429, 500, 502, 503, 504),
-                allowed_methods=("GET", "POST"),
+                allowed_methods=("GET",),
                 raise_on_status=False,
             )
 
@@ -743,6 +809,7 @@ class API:
         # 非幂等/非关键请求走这个 session：不重试（兑换不能重放）
         self._no_retry_session = requests.Session()
         self._no_retry_session.headers.update(self.headers)
+        self._no_retry_session.cookies = self.session.cookies
         no_retry_adapter = HTTPAdapter(max_retries=Retry(total=0))
         self._no_retry_session.mount("https://", no_retry_adapter)
         self._no_retry_session.mount("http://", no_retry_adapter)
@@ -785,6 +852,7 @@ class API:
                 recover_ua = PLATFORM_UA.get(device)
                 if recover_ua:
                     self.log(LogEmoji.WARNING, f"设备平台不匹配 (loginDevice={device})，切换 UA 重试", force=True)
+                    self.headers["user-agent"] = recover_ua
                     raw = self._checkin_attempt(recover_ua)
                 if self._is_device_mismatch(raw):
                     hint = "自动切换 UA 后仍不匹配；请在账号 JSON 中补充 `user-agent` 字段，填入提取 Cookie 时浏览器的 User-Agent"
@@ -816,8 +884,8 @@ class API:
         return data
 
     @safe_call(default=None)
-    def get_points(self) -> Optional[int]:
-        """获取总积分。非关键请求，用短超时快速失败；取不到返回 None。"""
+    def fetch_points_summary(self) -> Optional[Dict]:
+        """获取总积分与连签摘要；失败返回 None，保留签到响应中的数据。"""
         response = self.request("GET", APIEndpoint.POINTS, timeout=POINTS_TIMEOUT, retry=False)
         if response is None:
             return None
@@ -826,13 +894,21 @@ class API:
         if data is None:
             return None
 
-        points = to_int(data.get("points"))
+        if data.get("code") != 0:
+            self.log(LogEmoji.ERROR, f"积分查询被拒(code={data.get('code')})", force=True)
+            return None
+        points = to_points(data.get("points"))
         if points is None:
             self.log(LogEmoji.ERROR, f"积分字段无法解析: {data.get('points')!r}", force=True)
             return None
 
         self.log(LogEmoji.SUCCESS, f"{{ code : {data.get('code', -2)}, points : {points} 积分}}")
-        return points
+        return data
+
+    def get_points(self) -> Optional[float]:
+        """兼容仅查询余额的调用方。"""
+        summary = self.fetch_points_summary()
+        return to_points(summary.get("points")) if summary is not None else None
 
     @safe_call(default="兑换未完成，请到站点确认")
     def exchange(self, plan: str) -> str:
@@ -868,6 +944,7 @@ class API:
         user_agent: Optional[str] = None,
         timeout: Optional[Tuple[int, int]] = None,
         retry: bool = True,
+        raise_timeout: bool = False,
     ) -> Optional[requests.Response]:
         """发送请求。retry=False 用于非幂等/非关键请求，跳过 adapter 重试。"""
         url = f"https://{self.domain}{path}"
@@ -878,12 +955,17 @@ class API:
         try:
             session = self.session if retry else self._no_retry_session
             if method.upper() == "POST":
-                response = session.post(url, headers=headers, data=data, timeout=timeout or self.timeout)
+                response = session.post(url, headers=headers, json=data, timeout=timeout or self.timeout)
             elif method.upper() == "GET":
                 response = session.get(url, headers=headers, timeout=timeout or self.timeout)
             else:
                 self.log(LogEmoji.ERROR, f"不支持的 HTTP 方法: {method}", force=True)
                 return None
+        except requests.exceptions.Timeout:
+            if raise_timeout:
+                raise
+            self.log(LogEmoji.ERROR, f"向 {url} 发起请求超时", force=True)
+            return None
         except requests.exceptions.RequestException as e:
             self.log(LogEmoji.ERROR, f"向 {url} 发起请求时发生网络错误: {e}", force=True)
             return None
@@ -909,16 +991,59 @@ class API:
         snippet = "（HTML 响应，已省略）" if is_html else body[:300] + ("..." if len(body) > 300 else "")
         self.log(LogEmoji.WARNING, f"向 {url} 请求失败，状态码 {status}。响应: {snippet}", force=True)
 
-    def _checkin_attempt(self, user_agent: str) -> Optional[Dict]:
-        """发起一次签到请求并返回解析后的响应体；请求失败或响应非 JSON 返回 None"""
-        response = self.request("POST", APIEndpoint.CHECKIN, data={"token": self.domain}, user_agent=user_agent)
+    def solve_checkin_challenge(self, user_agent: str) -> Optional[Dict]:
+        """获取一次性挑战；失败时停止，不降级为仅提交 token。"""
+        response = self.request("GET", APIEndpoint.CHALLENGE, user_agent=user_agent)
         if response is None:
             return None
-        try:
-            return response.json()
-        except ValueError:
-            self.log(LogEmoji.ERROR, "签到响应解析失败", force=True)
+        received_at = time.monotonic()
+        raw = self._json_dict(response, "签到挑战")
+        if raw is None:
             return None
+        if raw.get("code") != 0:
+            log_reject(raw.get("code", -2), raw, str(raw.get("message", "挑战获取失败")), self.domain, self.log)
+            return raw
+        nonce = raw.get("nonce")
+        ttl = to_points(raw.get("ttl", 300000))
+        if not isinstance(nonce, str) or not nonce or ttl is None or ttl <= 0:
+            self.log(LogEmoji.ERROR, "签到挑战缺少有效 nonce / ttl", force=True)
+            return None
+        delay = random.uniform(2.8, 4.0)
+        if ttl / 1000 <= delay + 15:
+            self.log(LogEmoji.ERROR, "签到挑战有效期不足，停止提交", force=True)
+            return None
+        # 单调时钟避免系统校时影响；等待至少 2.5 秒，并保留有效期安全余量。
+        ready_at = received_at + delay
+        while True:
+            remaining = ready_at - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(remaining)
+        if time.monotonic() - received_at >= ttl / 1000 - 15:
+            self.log(LogEmoji.ERROR, "签到挑战已过期，停止提交", force=True)
+            return None
+        return {"nonce": nonce, "proof": compute_checkin_proof(nonce)}
+
+    def _checkin_attempt(self, user_agent: str) -> Optional[Dict]:
+        """超时只重试一次，每次获取新挑战；POST 禁止 adapter 自动重放。"""
+        for attempt in range(2):
+            challenge = self.solve_checkin_challenge(user_agent)
+            if challenge is None or "code" in challenge:
+                return challenge
+            try:
+                response = self.request(
+                    "POST", APIEndpoint.CHECKIN,
+                    data={"token": self.domain, **challenge}, user_agent=user_agent,
+                    retry=False, raise_timeout=True,
+                )
+            except requests.exceptions.Timeout:
+                if attempt == 0:
+                    self.log(LogEmoji.WARNING, "签到超时，重新获取挑战后重试一次", force=True)
+                    continue
+                self.log(LogEmoji.ERROR, "签到重试仍超时", force=True)
+                return None
+            return self._json_dict(response, "签到") if response is not None else None
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -1058,8 +1183,12 @@ class Report:
             name_cell = f"{entry.name or '未命名'}  " if show_name else ""
             line = (
                 f"#{entry.index}  {name_cell}{emoji} {status}  {r.domain}  "
-                f"获得 {r.points} 积分 · 剩余 {format_days(r.days)} · 总 {format_points(r.points_total)}"
+                f"获得 {r.points:g} 积分 · 剩余 {format_days(r.days)} · 总 {format_points(r.points_total)}"
             )
+            if r.streak is not None:
+                line += f" · 连签 {r.streak} 天"
+            if r.plan:
+                line += f" · 套餐 {r.plan}"
             if r.exchange:
                 line += f" · {r.exchange}"
             if r.note:
@@ -1224,7 +1353,10 @@ def main() -> None:
             exit_code = 1
         else:
             logger.info(f"{LogEmoji.START} 步骤 2: 执行签到")
+            maybe_sleep_schedule_jitter()
             report = CheckinRunner(config).run()
+            if any(entry.result.code is CheckinStatus.FAILURE for entry in report.entries):
+                exit_code = 1
 
             logger.info(f"{LogEmoji.START} 步骤 3: 生成报告")
             logger.info(f"\n{LogEmoji.END} ========== 签到总结 ==========\n{report.title}\n{report.render()}")

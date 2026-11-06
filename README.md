@@ -85,6 +85,29 @@
 
 探测用短超时快速筛一遍；只对**网络无响应**的域名再试一次，返回「没有权限」的不重试。
 
+## 签到协议（2026-11-06 核对）
+
+已核对 [官网签到页](https://glados.cloud/console/checkin) 及其公开前端脚本：
+[挑战与签到提交](https://glados.cloud/static/js/main~189dec1b.806cceb9.chunk.js)、
+[proof 计算](https://glados.cloud/static/js/main~20e9f87d.97f55e01.chunk.js)。
+
+1. `GET /api/user/checkin/challenge` 获取 `nonce` 与 `ttl`（毫秒，缺省 300000）。
+2. 自收到挑战起等待至少 2.5 秒，脚本使用 2.8～4.0 秒随机间隔；挑战失效或获取失败时停止提交。
+3. 计算 `SHA-256(nonce + ".glados-observe-v1")` 的 64 位小写十六进制 `proof`。
+4. 以 JSON 提交 `POST /api/user/checkin`，请求体为 `{token: 当前域名, nonce, proof}`。
+
+签到 POST 不自动重放；超时后最多重新获取一次挑战再提交。未指定 UA 时，设备不匹配仍按登录设备切换 UA，并重新获取挑战；指定 UA 则保留用户配置。
+
+优先读取服务端返回的本次 `points`（保留 `.5` 小数）、`streak` 和 `list[0].balance`，再通过积分接口刷新余额及连签。新版 `code=0, repeated=true` 与旧版 `code=1` 都视为重复签到，本次获得积分显示 0。积分接口失败时保留签到响应中的余额；日志与通知补充连签及套餐名称。
+
+官网展示的奖励组成是基础积分、套餐、连签与线路质量奖励。具体所得采用服务端响应，不在脚本中按界面规则估算。定时运行额外错峰等待 5～45 秒，手动与本地运行不等待。
+
+本地回归测试（模拟响应，无需 Cookie，不发送签到或推送请求）：
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ## 🎁积分兑换
 
 设置 `GLADOS_EXCHANGE_PLAN` 后才执行，且只在签到**成功 / 重复**时兑换。
@@ -219,7 +242,7 @@ schedule:
 <details>
 <summary><strong>Q：「重复签到」算成功还是失败？</strong></summary>
 
-算正常结果。表示当天已签过，服务端返回 `code=1`，总结里单独计数为「重复」，不计入失败。
+算正常结果。表示当天已签过，服务端返回 `code=0, repeated=true`（兼容旧版 `code=1`），总结里单独计数为「重复」，不计入失败。
 
 </details>
 
@@ -254,7 +277,7 @@ GLaDOS 会校验 UA 与登录设备。填了 `user-agent` 就原样使用；没�
 <details>
 <summary><strong>Q：签到失败会让 Actions 变红吗？</strong></summary>
 
-分两种情况：**配置错误**（未填 Cookie、JSON 格式非法）会以非 0 退出码结束，工作流变红；**业务失败**（Cookie 失效 `code=-2`、服务端 5xx）不会变红，避免偶发失败天天误报。因此业务失败需要自己关注推送或日志。
+会。配置错误或任一账号签到失败都会在发送通知后以非 0 退出码结束，使工作流变红；重复签到属于正常结果，不触发失败。仅积分查询或通知发送失败不改变签到退出码。
 
 </details>
 
@@ -288,6 +311,7 @@ Windows PowerShell 用 `$env:GLADOS_COOKIES='[...]'`。
 .
 ├── checkin.py                    # 主程序：账号模型 / API / 配置 / 报告 / 推送
 ├── logging_config.py             # 日志配置（北京时间、级别短标签、脱敏）
+├── tests/test_checkin.py         # 签到协议离线回归测试
 ├── requirements.txt              # 依赖
 ├── README.md                     # 说明文档
 ├── LICENSE                       # MIT 许可
@@ -317,6 +341,10 @@ Windows PowerShell 用 `$env:GLADOS_COOKIES='[...]'`。
 - 推送兼容 Server酱。
 
 **2026-11**
+
+- 接入官网 nonce / proof 挑战协议，JSON 提交；超时重新获取挑战后重试。
+- 修复新版重复签到识别、小数积分截断；补充余额、连签与套餐展示。
+- 定时任务错峰；签到失败发送通知后以非 0 退出，新增离线回归测试。
 
 - GLADOS_COOKIES 格式改为 JSON 数组，支持 `name` / `origin` / `cookie` / `user-agent`；旧 `&` 格式仍兼容。
 - 优化失败原因提示；签到被拒、兑换未完成等场景给出可执行建议。
