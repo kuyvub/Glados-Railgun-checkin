@@ -4,11 +4,24 @@ Quantumult X 与 Surge 5 共用同一个脚本，默认每天 09:05 按设备时
 
 ## Quantumult X
 
-在「任务配置」添加 [远程任务库](https://raw.githubusercontent.com/kuyvub/Glados-Railgun-checkin/refs/heads/quantumultx-surge/clients/quantumultx-gallery.json)，从中添加 GLaDOS 任务，并启用随任务导入的重写。如果需要单独添加重写，使用 [重写配置](https://raw.githubusercontent.com/kuyvub/Glados-Railgun-checkin/refs/heads/quantumultx-surge/clients/quantumultx.conf)。
+1. 在「引用资源 → 重写」添加 [Cookie 获取重写](https://raw.githubusercontent.com/kuyvub/Glados-Railgun-checkin/refs/heads/quantumultx-surge/clients/quantumultx.conf)，关闭该条目的「资源解析器」，保存并启用。`quantumultx.conf` 已采用 Quantumult X 的重写格式。
+2. 在「计划任务 → 任务仓库」添加 [GLaDOS 任务库](https://raw.githubusercontent.com/kuyvub/Glados-Railgun-checkin/refs/heads/quantumultx-surge/clients/quantumultx-gallery.json)，选中并添加「GLaDOS 积分签到」。如果先通过任务库添加了附加组件，只需确认相同的重写已启用。
 
-也可把下面的任务行放入现有的 `[task_local]`。
+如果添加资源时报 `Resource parser result is invalid`，先检查「资源路径」是否误填了 `glados-checkin.js`。请在「引用资源 → 重写」使用上面的 `.conf` 地址，并关闭该条目的解析器。`.js` 地址由定时任务和重写规则加载。
+
+也可用下面的链接打开任务仓库。复制整行到 Safari 地址栏后打开。
+
+```text
+quantumult-x:///ui?module=gallery&type=task&action=add&content=%5B%22https%3A%2F%2Fraw.githubusercontent.com%2Fkuyvub%2FGlados-Railgun-checkin%2Frefs%2Fheads%2Fquantumultx-surge%2Fclients%2Fquantumultx-gallery.json%22%5D
+```
+
+手动编辑配置时，把下面两行分别加到现有的 `[rewrite_remote]` 和 `[task_local]`。若已经通过界面添加对应条目，使用现有条目即可。
 
 ```ini
+[rewrite_remote]
+https://raw.githubusercontent.com/kuyvub/Glados-Railgun-checkin/refs/heads/quantumultx-surge/clients/quantumultx.conf, tag=GLaDOS 获取 Cookie, enabled=true
+
+[task_local]
 5 9 * * * https://raw.githubusercontent.com/kuyvub/Glados-Railgun-checkin/refs/heads/quantumultx-surge/clients/glados-checkin.js, tag=GLaDOS 积分签到, enabled=true
 ```
 

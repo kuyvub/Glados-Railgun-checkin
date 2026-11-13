@@ -1,6 +1,6 @@
 {
   "name": "GLaDOS 积分签到",
-  "description": "每天 09:05 签到。首次导入后启用配套重写和 MITM，用浏览器登录 glados.cloud 并打开积分页，保存 Cookie 后手动运行一次。",
+  "description": "每天 09:05 签到。在计划任务中添加本任务。首次使用时启用附加组件中的 Cookie 获取重写和 MITM，登录 glados.cloud 并打开积分页，保存 Cookie 后手动运行一次。",
   "task": [
     {
       "config": "5 9 * * * https://raw.githubusercontent.com/kuyvub/Glados-Railgun-checkin/refs/heads/quantumultx-surge/clients/glados-checkin.js, tag=GLaDOS 积分签到, enabled=true",
