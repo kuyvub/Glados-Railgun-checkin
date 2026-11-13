@@ -1,0 +1,9 @@
+#!name=GLaDOS 积分签到
+#!desc=每日 09:05 签到。首次启用 MITM 后用浏览器登录 glados.cloud 并打开积分页获取 Cookie。
+
+[Script]
+GLaDOS 登录信息 = type=http-response,pattern=^https://glados\.cloud/api/user/checkin/challenge$,requires-body=true,script-path=https://raw.githubusercontent.com/kuyvub/Glados-Railgun-checkin/refs/heads/quantumultx-surge/clients/glados-checkin.js
+GLaDOS 积分签到 = type=cron,cronexp="5 9 * * *",wake-system=true,timeout=50,script-path=https://raw.githubusercontent.com/kuyvub/Glados-Railgun-checkin/refs/heads/quantumultx-surge/clients/glados-checkin.js
+
+[MITM]
+hostname = %APPEND% glados.cloud
